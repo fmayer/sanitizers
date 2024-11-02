@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -11,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"io"
 	"io/ioutil"
 
 	"golang.org/x/net/html"
@@ -39,6 +42,12 @@ var (
 		{"x86_64-linux-fuzzer", "http://lab.llvm.org/buildbot/api/v2/builders/sanitizer-x86_64-linux-fuzzer"},
 		{"aarch64-linux-fuzzer", "http://lab.llvm.org/buildbot/api/v2/builders/sanitizer-aarch64-linux-fuzzer"},
 	}
+)
+
+var (
+	addr    = flag.String("addr", "localhost:8080", "address to run server at")
+	refresh = flag.Duration("refresh", 10*time.Minute, "how often to regenerate when running server")
+	serve   = flag.Bool("serve", false, "run server rather than printing to stdout")
 )
 
 func attr(n *html.Node, attrName string) string {
@@ -130,7 +139,7 @@ func GetStatusFromJson(builderUrl string) (statusLine, error) {
 	bodyBytes, _ := ioutil.ReadAll(resp.Body)
 	err = json.Unmarshal(bodyBytes, &builds)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to parse JS: %s\n", err.Error())
+		fmt.Fprintf(os.Stderr, "Failed to parse JS from %s: %s\n", builderUrl, err.Error())
 		return *new(statusLine), err
 	}
 	sort.SliceStable(builds.Builds, func(i, j int) bool {
@@ -365,8 +374,8 @@ func GetOssFuzzStatusString() string {
 	return fmt.Sprintf("%s %s", header, htmlStatuses)
 }
 
-func main() {
-	fmt.Println(`
+func Generate(w io.Writer) {
+	fmt.Fprintln(w, `
 <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"
    "http://www.w3.org/TR/html4/loose.dtd">
 <html>
@@ -437,9 +446,9 @@ $(function() {
 
 	for i := range bots {
 		if statuses[i].builderUrl == "" {
-			fmt.Println(fmt.Sprintf("<tr><td colspan=%d><h2>", maxStatuses+3))
-			fmt.Println(bots[i].name)
-			fmt.Println("</h2></td></tr>")
+			fmt.Fprintln(w, fmt.Sprintf("<tr><td colspan=%d><h2>", maxStatuses+3))
+			fmt.Fprintln(w, bots[i].name)
+			fmt.Fprintln(w, "</h2></td></tr>")
 			continue
 		}
 
@@ -507,19 +516,50 @@ $(function() {
 				r += td("", a(s.buildUrl, span(style+" symbol", "")))
 			}
 		}
-		fmt.Println(tr(r))
+		fmt.Fprintln(w, tr(r))
 	}
-	fmt.Println(`</table>`)
-	fmt.Println(<-ossfuzz_ch)
-	fmt.Println(`<p><font size=".8em">go/dynamic-tools-dashboard, `)
+	fmt.Fprintln(w, `</table>`)
+	fmt.Fprintln(w, <-ossfuzz_ch)
+	fmt.Fprintln(w, `<p><font size=".8em">go/dynamic-tools-dashboard, `)
 	tz, err := time.LoadLocation("America/Los_Angeles")
 	if err != nil {
-		fmt.Println("err: ", err.Error())
+		fmt.Fprintln(w, "err: ", err.Error())
 	}
-	fmt.Println(time.Now().In(tz).Format("2006-Jan-2 15:04:05 MST"))
-	fmt.Println(`
+	fmt.Fprintln(w, time.Now().In(tz).Format("2006-Jan-2 15:04:05 MST"))
+	fmt.Fprintln(w, `
 </font></p>
 </body>
 </html>
 `)
+}
+
+var data []byte
+
+func UpdateData() {
+	var buf bytes.Buffer
+	Generate(&buf)
+	data = buf.Bytes()
+}
+
+func Cron() {
+	for {
+		UpdateData()
+		time.Sleep(*refresh)
+	}
+}
+
+func Handle(w http.ResponseWriter, req *http.Request) {
+	w.Write(data)
+}
+
+func main() {
+	flag.Parse()
+	if !*serve {
+		Generate(os.Stdout)
+		return
+	}
+	UpdateData()
+	go Cron()
+	http.HandleFunc("/", Handle)
+	http.ListenAndServe(*addr, nil)
 }
