@@ -44,8 +44,16 @@ var (
 	}
 )
 
+func GetDefaultAddr() string {
+	port := os.Getenv("PORT")
+	if port == "" {
+		return ":8080"
+	}
+	return ":" + port
+}
+
 var (
-	addr    = flag.String("addr", "localhost:8080", "address to run server at")
+	addr    = flag.String("addr", GetDefaultAddr(), "address to run server at")
 	refresh = flag.Duration("refresh", 10*time.Minute, "how often to regenerate when running server")
 	serve   = flag.Bool("serve", false, "run server rather than printing to stdout")
 )
